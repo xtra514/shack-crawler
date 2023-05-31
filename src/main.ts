@@ -43,20 +43,16 @@ const startCrawler = async () => {
   const gogoanimeColl = getCollection<Gogoanime>(mongoClient, process.env.DB_NAME!, "gogoanime")!;
 
   try {
-    for (const suffix of animelistSuffixes) {
-      // should be 1 always. unless you know what you're doing.
-      let page = 1;
+    const tasks = animelistSuffixes.map((suffix) => handlePages(suffix, 1, gogoanimeColl));
 
-      await handlePages(suffix, page, gogoanimeColl);
-
-      logger.info(`\nFinished scraping anime-list${suffix}...`, colors.green);
-    }
+    await Promise.all(tasks);
 
     logger.info("\nFinished crawling.", colors.green);
     await mongoClient.close();
     process.exit(0);
   } catch (err) {
-    throw new Error(`${(err as Error).message}`);
+    logger.error(`An error occurred: ${(err as Error).message}`);
+    process.exit(1);
   }
 };
 
@@ -65,42 +61,52 @@ const handlePages = async (suffix: string, page: number, gogoanimeColl: Collecti
 
   logger.info(`\nScraping anime-list${suffix} page = ${page}...`, colors.blue);
 
-  const html = await axios.get(url);
-  const $ = load(html.data);
+  try {
+    const html = await axios.get(url);
+    const $ = load(html.data);
 
-  const hasNextPage = $("div.anime_name.anime_list > div > div > ul > li.selected").next().length > 0;
+    const hasNextPage = $("div.anime_name.anime_list > div > div > ul > li.selected").next().length > 0;
 
-  const animeList = $("section.content_left > div > div.anime_list_body > ul").children();
+    const animeList = $("section.content_left > div > div.anime_list_body > ul").children();
 
-  for (const anime of animeList) {
-    const animeId = $(anime).find("a").attr("href")?.split("/")[2];
+    const tasks = [];
+    for (const anime of animeList) {
+      const animeId = $(anime).find("a").attr("href")?.split("/")[2];
 
-    if (animeId) {
-      if (!(await validateGogoanime(animeId, gogoanimeColl))) {
-        logger.error(`Could not validate animeId = ${animeId}`);
+      if (animeId) {
+        tasks.push(validateGogoanime(animeId, gogoanimeColl));
       }
     }
-  }
 
-  endTime = performance.now();
-  logger.info(
-    `Anime-list page = ${page} scraped. ${global.config.animesAdded} anime(s) added, ${
-      global.config.animesUpdated
-    } anime(s) updated.  ${((endTime - startTime) / 1000 / 60).toFixed(3)} minutes elapsed.`,
-    colors.green
-  );
+    await Promise.all(tasks);
 
-  if (hasNextPage) {
-    await handlePages(suffix, page + 1, gogoanimeColl);
+    endTime = performance.now();
+    logger.info(
+      `Anime-list page = ${page} scraped. ${global.config.animesAdded} anime(s) added, ${
+        global.config.animesUpdated
+      } anime(s) updated.  ${((endTime - startTime) / 1000 / 60).toFixed(3)} minutes elapsed.`,
+      colors.green
+    );
+
+    if (hasNextPage) {
+      await handlePages(suffix, page + 1, gogoanimeColl);
+    }
+  } catch (err) {
+    logger.error(`Error while scraping anime-list${suffix} page = ${page}: ${(err as Error).message}`);
   }
 };
 
 (async () => {
   validateEnviromentVariables();
 
-  await connectToDB(mongoClient!);
-  await validateDB(mongoClient!, process.env.DB_NAME!);
+  try {
+    await connectToDB(mongoClient!);
+    await validateDB(mongoClient!, process.env.DB_NAME!);
 
-  startTime = performance.now();
-  await startCrawler();
+    startTime = performance.now();
+    await startCrawler();
+  } catch (err) {
+    logger.error(`An error occurred: ${(err as Error).message}`);
+    process.exit(1);
+  }
 })();
